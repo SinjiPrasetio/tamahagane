@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+@layer base {
+  body {
+    @apply text-white bg-gray-900;
+  }
+}
+
+@layer components {
+  .btn-blue {
+    @apply px-4 py-2 font-bold text-white bg-blue-600 rounded hover:bg-blue-500;
+  }
+}
