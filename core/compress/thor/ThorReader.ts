@@ -47,12 +47,16 @@ export class ThorArchive {
   }
 
   static async open(thorArchivePath: string): Promise<ThorArchive> {
-    const fileHandle = await fs.promises.open(thorArchivePath, 'r');
-    const fileStats = await fileHandle.stat();
-    const fileBuffer = Buffer.alloc(fileStats.size);
-    await fileHandle.read(fileBuffer, 0, fileStats.size, 0);
-    const thorPatch = await parseThorPatch(fileBuffer);
-    return new ThorArchive(fileHandle, thorPatch);
+    try {
+      const fileHandle = await fs.promises.open(thorArchivePath, 'r');
+      const fileStats = await fileHandle.stat();
+      const fileBuffer = Buffer.alloc(fileStats.size);
+      await fileHandle.read(fileBuffer, 0, fileStats.size, 0);
+      const thorPatch = await parseThorPatch(fileBuffer);
+      return new ThorArchive(fileHandle, thorPatch);
+    } catch (error) {
+      console.error('Error when opening thor :', error);
+    }
   }
 
   static async new(filePath: string): Promise<ThorArchive> {
@@ -96,8 +100,36 @@ export class ThorArchive {
   }
 
   async readFileContent(filePath: string): Promise<Buffer> {
-    const content = await this.getEntryRawData(filePath);
-    return zlib.inflateSync(content);
+    try {
+      const fileEntry = this.getFileEntry(filePath);
+      if (!fileEntry) {
+        throw new Error('Entry not found');
+      }
+
+      if (fileEntry.sizeCompressed === 0) {
+        return Buffer.alloc(0);
+      }
+
+      const buffer = Buffer.alloc(fileEntry.sizeCompressed);
+      await this.obj.read({
+        buffer: buffer,
+        offset: 0,
+        length: fileEntry.sizeCompressed,
+        position: fileEntry.offset,
+      });
+
+      // Decompress the content
+      const decompressedContent = zlib.inflateSync(buffer);
+
+      if (decompressedContent.length !== fileEntry.size) {
+        throw new Error('Decompressed content is not as expected');
+      }
+
+      return decompressedContent;
+    } catch (error) {
+      console.error('Error reading file content:', error);
+      throw error;
+    }
   }
 
   async extractFile(filePath: string, destinationPath: string): Promise<void> {
@@ -114,7 +146,7 @@ export class ThorArchive {
   }
 
   async isValid(): Promise<boolean> {
-    const integrityData = await this.readFileContent('data.integrity');
+    const integrityData = await this.readFileContent(INTEGRITY_FILE_NAME);
     const integrityDataStr = iconv.decode(integrityData, 'win1252');
     const integrityInfo = parseDataIntegrityInfo(integrityDataStr);
 
@@ -269,10 +301,6 @@ function parseSingleFileTable(data: Uint8Array): SingleFileTableDesc | null {
   if (data.byteLength < 1) {
     return null; // Ensure there's at least 1 byte to consume
   }
-
-  // Optionally consume the first byte, since it's not used in computation
-  // const consumedByte = data.slice(0, 1);
-
   return { fileTableOffset: 0 };
 }
 
@@ -280,8 +308,7 @@ function parseMultipleFilesTable(
   data: Uint8Array
 ): MultipleFilesTableDesc | null {
   if (data.byteLength < 8) return null;
-
-  const view = new DataView(data.buffer);
+  const view = new DataView(data.buffer, data.byteOffset);
   const fileTableCompressedSize = view.getInt32(0, true);
   const fileTableOffset = view.getInt32(4, true);
 
@@ -313,36 +340,31 @@ function stringFromWin1252(v: Uint8Array): string | null {
 function parseSingleFileEntry(data: Uint8Array): ThorFileEntry | null {
   if (data.byteLength < 9) return null;
 
-  const view = new DataView(data.buffer);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   let offset = 0;
 
-  const sizeCompressed = view.getInt32(offset, true);
+  const sizeCompressed = view.getInt32(offset, true); // Read as signed 32-bit int, little-endian
   offset += 4;
 
-  const size = view.getInt32(offset, true);
+  const size = view.getInt32(offset, true); // Read as signed 32-bit int, little-endian
   offset += 4;
 
-  const relativePathSize = view.getUint8(offset);
+  const relativePathSize = view.getUint8(offset); // Read as unsigned 8-bit int
   offset += 1;
 
   if (offset + relativePathSize > data.byteLength) return null;
 
   const relativePathBytes = new Uint8Array(
     data.buffer,
-    offset,
+    data.byteOffset + offset,
     relativePathSize
   );
-  const relativePath = stringFromWin1252(relativePathBytes);
+  const relativePath = stringFromWin1252(relativePathBytes); // Ensure correct Windows-1252 decoding
+
   if (relativePath === null) return null;
 
-  // Create and return an instance of ThorFileEntry
-  return new ThorFileEntry(
-    sizeCompressed,
-    size,
-    relativePath,
-    false, // isRemoved
-    0 // offset
-  );
+  // No update to offset since it's managed outside this function, similar to Rust implementation
+  return new ThorFileEntry(sizeCompressed, size, relativePath, false, offset);
 }
 
 function isFileRemoved(flags: number): boolean {
@@ -352,7 +374,8 @@ function isFileRemoved(flags: number): boolean {
 function parseMultipleFilesEntry(data: Uint8Array): ThorFileEntry | null {
   if (data.byteLength < 1) return null;
 
-  const view = new DataView(data.buffer);
+  const view = new DataView(data.buffer, data.byteOffset);
+  console.log(view);
   let offset = 0;
 
   const relativePathSize = view.getUint8(offset);
@@ -421,47 +444,56 @@ function parseMultipleFilesEntries(
 }
 
 async function parseThorPatch(data: Uint8Array): Promise<ThorContainer> {
-  const HEADER_EXTENDED_MAX_SIZE =
-    HEADER_MAX_SIZE +
-    MULTIPLE_FILES_TABLE_DESC_SIZE +
-    SINGLE_FILE_ENTRY_MAX_SIZE;
+  try {
+    const HEADER_EXTENDED_MAX_SIZE =
+      HEADER_MAX_SIZE +
+      MULTIPLE_FILES_TABLE_DESC_SIZE +
+      SINGLE_FILE_ENTRY_MAX_SIZE;
 
-  if (data.byteLength < HEADER_EXTENDED_MAX_SIZE) {
-    throw new Error('Failed to parse THOR header: data too short');
-  }
+    const headerData = data.slice(0, HEADER_EXTENDED_MAX_SIZE);
 
-  const header = parseThorHeader(data);
-  if (!header) {
-    throw new Error('Failed to parse THOR header');
-  }
+    // if (data.byteLength < HEADER_EXTENDED_MAX_SIZE) {
+    //   return null;
+    // }
 
-  switch (header.mode) {
-    case ThorMode.Invalid:
-      throw new Error('Invalid THOR header mode');
+    const header = parseThorHeader(headerData);
+    if (!header) {
+      throw new Error('Failed to parse THOR header');
+    }
+    const slicedData = data.slice(header.mode);
 
-    case ThorMode.SingleFile: {
-      const table = parseSingleFileTable(data);
-      const entry = parseSingleFileEntry(data.subarray(table.fileTableOffset));
-      if (!entry) {
-        throw new Error('Failed to parse THOR file entry');
+    switch (header.mode) {
+      case ThorMode.Invalid:
+        throw new Error('Invalid THOR header mode');
+
+      case ThorMode.SingleFile: {
+        const table = parseSingleFileTable(slicedData);
+        const entry = parseSingleFileEntry(
+          slicedData.subarray(table.fileTableOffset)
+        );
+        if (!entry) {
+          throw new Error('Failed to parse THOR file entry');
+        }
+        entry.offset = header.mode + entry.offset; // Assuming the offset is the end of the data
+        return new ThorContainer(
+          header,
+          table, // Correct
+          new Map([[entry.relativePath, entry]])
+        );
       }
-      entry.offset = data.byteLength; // Assuming the offset is the end of the data
-      return new ThorContainer(
-        header,
-        table, // Correct
-        new Map([[entry.relativePath, entry]])
-      );
-    }
 
-    case ThorMode.MultipleFiles: {
-      const table = parseMultipleFilesTable(data);
-      const compressedTable = data.subarray(
-        table.fileTableOffset,
-        table.fileTableOffset + table.fileTableCompressedSize
-      );
-      const decompressedTable = zlibDecompress(Buffer.from(compressedTable)); // Implement zlibDecompress to decompress the data
-      const entries = parseMultipleFilesEntries(decompressedTable);
-      return new ThorContainer(header, table, entries);
+      case ThorMode.MultipleFiles: {
+        const table = parseMultipleFilesTable(slicedData);
+        const compressedTable = slicedData.subarray(
+          table.fileTableOffset,
+          table.fileTableOffset + table.fileTableCompressedSize
+        );
+        const decompressedTable = zlibDecompress(Buffer.from(compressedTable)); // Implement zlibDecompress to decompress the data
+        const entries = parseMultipleFilesEntries(decompressedTable);
+        return new ThorContainer(header, table, entries);
+      }
     }
+  } catch (error) {
+    console.error('Error when parse thor patch :', error);
   }
 }

@@ -4,6 +4,7 @@ import serve from 'electron-serve';
 import { createWindow } from './helpers';
 import fs from 'fs/promises';
 import GrfArchive from '../core/compress/grf/GrfReader';
+import { ThorArchive } from '../core/compress/thor/ThorReader';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -46,9 +47,16 @@ if (isProd) {
   ipcMain.handle('open-grf-file', async (_, grfPath) => {
     const read = new GrfArchive();
     const data = await read.open(grfPath);
-    console.log(data);
-    console.log(await read.getEntries());
-    console.log(await read.readFileContent('data\\06guild_r.gat'));
+    const FILE =
+      '/Users/sinjiprasetio/Documents/Coding/tamahagane/resources/test/thor/dir2.thor';
+    const thor = await ThorArchive.open(FILE);
+    // console.log(data);
+    // console.log(await read.getEntries());
+    // console.log(await read.readFileContent('data\\06guild_r.gat'));
+    console.log(thor);
+    console.log(thor.getEntries());
+    // console.log(thor.targetGrfName());
+    // console.log(await thor.isValid());
     return 'test';
   });
 })();
