@@ -2,10 +2,11 @@ import fs from 'fs';
 import zlib from 'zlib';
 import iconv from 'iconv-lite';
 import { decryptFileContent } from './crypto/Core';
-
-export const GRF_HEADER_MAGIC: string = 'Master of Magic\0';
-export const GRF_HEADER_SIZE: number = GRF_HEADER_MAGIC.length + 0x1e;
-export const GRF_TABLE_INFO2_SIZE: number = 2 * 4;
+import {
+  GRF_HEADER_MAGIC,
+  GRF_HEADER_SIZE,
+  GRF_TABLE_INFO2_SIZE,
+} from './constants';
 
 interface GrfContainer {
   header: GrfHeader;
@@ -50,7 +51,7 @@ enum GrfFileEncryption {
 
 // The nom library's parsing functions will be handled later
 
-export default class GrfReader {
+export default class GrfArchive {
   private container: GrfContainer | undefined = undefined;
   private grfPath: string;
   private entries: Map<string, GrfFileEntry> = new Map();

@@ -3,7 +3,7 @@ import { app, ipcMain } from 'electron';
 import serve from 'electron-serve';
 import { createWindow } from './helpers';
 import fs from 'fs/promises';
-import GrfReader from '../core/compress/grf/GrfReader';
+import GrfArchive from '../core/compress/grf/GrfReader';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -44,7 +44,7 @@ if (isProd) {
   });
 
   ipcMain.handle('open-grf-file', async (_, grfPath) => {
-    const read = new GrfReader();
+    const read = new GrfArchive();
     const data = await read.open(grfPath);
     console.log(data);
     console.log(await read.getEntries());
