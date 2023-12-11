@@ -177,6 +177,7 @@ interface ThorHeader {
   fileCount: number;
   mode: ThorMode;
   targetGrfName: string;
+  offset: number;
 }
 
 interface SingleFileTableDesc {
@@ -274,26 +275,36 @@ function parseThorHeader(data: Uint8Array): ThorHeader | null {
   const view = new DataView(data.buffer);
   let offset = magicLength;
 
-  const useGrfMerging = view.getUint8(offset) === 1;
-  offset += 1;
+  const useGrfMerging = view.getUint8(offset);
+  offset += 1; // Increment for useGrfMerging
 
   const fileCount = view.getUint32(offset, true);
-  offset += 4;
+  offset += 4; // Increment for fileCount
 
   const mode = view.getInt16(offset, true);
-  offset += 2;
+  offset += 2; // Increment for mode
 
   const targetGrfNameSize = view.getUint8(offset);
-  offset += 1;
+  offset += 1; // Increment for targetGrfNameSize byte
 
-  const targetGrfNameBytes = data.subarray(offset, offset + targetGrfNameSize);
-  const targetGrfName = new TextDecoder().decode(targetGrfNameBytes);
+  // If targetGrfNameSize is 0, we need to add one more to the offset for the length byte
+  if (targetGrfNameSize === 0) {
+    offset += 1;
+  } else {
+    offset += targetGrfNameSize; // Move past the targetGrfName
+  }
 
   return {
-    useGrfMerging,
+    useGrfMerging: useGrfMerging === 1,
     fileCount,
     mode: i16ToThorMode(mode),
-    targetGrfName,
+    targetGrfName:
+      targetGrfNameSize > 0
+        ? new TextDecoder().decode(
+            data.slice(offset - targetGrfNameSize, offset)
+          )
+        : '',
+    offset: offset,
   };
 }
 
@@ -308,13 +319,31 @@ function parseMultipleFilesTable(
   data: Uint8Array
 ): MultipleFilesTableDesc | null {
   if (data.byteLength < 8) return null;
-  const view = new DataView(data.buffer, data.byteOffset);
+  const view = new DataView(data.buffer, data.byteOffset - 1, data.byteLength);
+  console.log(data.byteOffset);
   const fileTableCompressedSize = view.getInt32(0, true);
+  console.log(fileTableCompressedSize);
   const fileTableOffset = view.getInt32(4, true);
+
+  for (let i = 0; i < 300; i++) {
+    const test = new DataView(data.buffer, i);
+    const fileTableCompressedSize = test.getInt32(0, true);
+    const fileTableOffset = test.getInt32(4, true);
+    console.log(
+      'offset',
+      i,
+      'compress',
+      fileTableCompressedSize,
+      'table offset',
+      fileTableOffset
+    );
+  }
+
+  const correctFileTableOffset = data.byteOffset + fileTableOffset;
 
   return {
     fileTableCompressedSize,
-    fileTableOffset,
+    fileTableOffset: correctFileTableOffset,
   };
 }
 
@@ -374,7 +403,7 @@ function isFileRemoved(flags: number): boolean {
 function parseMultipleFilesEntry(data: Uint8Array): ThorFileEntry | null {
   if (data.byteLength < 1) return null;
 
-  const view = new DataView(data.buffer, data.byteOffset);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   console.log(view);
   let offset = 0;
 
@@ -460,7 +489,9 @@ async function parseThorPatch(data: Uint8Array): Promise<ThorContainer> {
     if (!header) {
       throw new Error('Failed to parse THOR header');
     }
-    const slicedData = data.slice(header.mode);
+    const slicedData = data.slice(header.offset);
+    console.log(HEADER_MAX_SIZE);
+    console.log(header);
 
     switch (header.mode) {
       case ThorMode.Invalid:
@@ -468,6 +499,7 @@ async function parseThorPatch(data: Uint8Array): Promise<ThorContainer> {
 
       case ThorMode.SingleFile: {
         const table = parseSingleFileTable(slicedData);
+        console.log('Table:', table);
         const entry = parseSingleFileEntry(
           slicedData.subarray(table.fileTableOffset)
         );
@@ -484,11 +516,19 @@ async function parseThorPatch(data: Uint8Array): Promise<ThorContainer> {
 
       case ThorMode.MultipleFiles: {
         const table = parseMultipleFilesTable(slicedData);
+        const compressedTablePosition = table.fileTableOffset - header.offset;
         const compressedTable = slicedData.subarray(
-          table.fileTableOffset,
-          table.fileTableOffset + table.fileTableCompressedSize
+          compressedTablePosition,
+          compressedTablePosition + table.fileTableCompressedSize
         );
-        const decompressedTable = zlibDecompress(Buffer.from(compressedTable)); // Implement zlibDecompress to decompress the data
+        console.log(compressedTable);
+        console.log(Buffer.from(compressedTable));
+        console.log(data.length);
+        console.log(data.length - header.offset);
+        console.log(table.fileTableOffset);
+        console.log(compressedTable);
+        const decompressedTable = zlibDecompress(Buffer.from(compressedTable));
+        console.log('reach');
         const entries = parseMultipleFilesEntries(decompressedTable);
         return new ThorContainer(header, table, entries);
       }
