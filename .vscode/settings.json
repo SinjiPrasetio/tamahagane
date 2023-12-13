@@ -1,0 +1,6 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "./grf-core/Cargo.toml",
+    "./grf-core/Cargo.toml"
+  ]
+}

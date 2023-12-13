@@ -83,8 +83,16 @@ export class ThorArchive {
 
   async getEntryRawData(filePath: string): Promise<Buffer> {
     const fileEntry = this.container.entries.get(filePath);
-    if (!fileEntry || fileEntry.sizeCompressed === 0) {
-      return Buffer.alloc(0);
+    if (!fileEntry) {
+      console.error(`File entry not found for path: ${filePath}`);
+      throw new Error(`File entry not found for path: ${filePath}`);
+    }
+
+    if (fileEntry.sizeCompressed <= 0) {
+      console.error(
+        `Invalid sizeCompressed for file: ${filePath}, sizeCompressed: ${fileEntry.sizeCompressed}`
+      );
+      return Buffer.alloc(0); // or handle this scenario as needed
     }
 
     // Read the data from the file at the specific offset
@@ -192,7 +200,7 @@ interface MultipleFilesTableDesc {
 // ThorTable can be represented as a TypeScript type with union types
 type ThorTable = SingleFileTableDesc | MultipleFilesTableDesc;
 
-class ThorFileEntry {
+export class ThorFileEntry {
   sizeCompressed: number;
   size: number;
   relativePath: string;
@@ -316,34 +324,26 @@ function parseSingleFileTable(data: Uint8Array): SingleFileTableDesc | null {
 }
 
 function parseMultipleFilesTable(
-  data: Uint8Array
+  buffer: Buffer
 ): MultipleFilesTableDesc | null {
-  if (data.byteLength < 8) return null;
-  const view = new DataView(data.buffer, data.byteOffset - 1, data.byteLength);
-  console.log(data.byteOffset);
-  const fileTableCompressedSize = view.getInt32(0, true);
-  console.log(fileTableCompressedSize);
-  const fileTableOffset = view.getInt32(4, true);
-
-  for (let i = 0; i < 300; i++) {
-    const test = new DataView(data.buffer, i);
-    const fileTableCompressedSize = test.getInt32(0, true);
-    const fileTableOffset = test.getInt32(4, true);
-    console.log(
-      'offset',
-      i,
-      'compress',
-      fileTableCompressedSize,
-      'table offset',
-      fileTableOffset
-    );
+  if (buffer.byteLength < 8) {
+    // Ensure buffer has at least 8 bytes (4 bytes for size and 4 bytes for offset)
+    return null;
   }
 
-  const correctFileTableOffset = data.byteOffset + fileTableOffset;
+  const view = new DataView(
+    buffer.buffer,
+    buffer.byteOffset,
+    buffer.byteLength
+  );
+
+  // Read the file table compressed size and offset as 32-bit integers (little-endian)
+  const fileTableCompressedSize = view.getInt32(0, true);
+  const fileTableOffset = view.getInt32(4, true);
 
   return {
     fileTableCompressedSize,
-    fileTableOffset: correctFileTableOffset,
+    fileTableOffset,
   };
 }
 
@@ -404,7 +404,6 @@ function parseMultipleFilesEntry(data: Uint8Array): ThorFileEntry | null {
   if (data.byteLength < 1) return null;
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  console.log(view);
   let offset = 0;
 
   const relativePathSize = view.getUint8(offset);
@@ -417,7 +416,9 @@ function parseMultipleFilesEntry(data: Uint8Array): ThorFileEntry | null {
     offset,
     relativePathSize
   );
+
   const relativePath = stringFromWin1252(relativePathBytes);
+  console.log(relativePath);
   if (relativePath === null) return null;
   offset += relativePathSize;
 
@@ -436,7 +437,8 @@ function parseMultipleFilesEntry(data: Uint8Array): ThorFileEntry | null {
     );
   }
 
-  if (data.byteLength < offset + 8) return null;
+  // For existing files, read offset, sizeCompressed, and size
+  if (data.byteLength < offset + 12) return null; // Ensure there's enough data for the remaining fields
   const fileOffset = view.getUint32(offset, true);
   offset += 4;
 
@@ -446,7 +448,8 @@ function parseMultipleFilesEntry(data: Uint8Array): ThorFileEntry | null {
   const size = view.getInt32(offset, true);
   offset += 4;
 
-  // Create and return an instance of ThorFileEntry for existing files
+  console.log(offset);
+
   return new ThorFileEntry(
     sizeCompressed,
     size,
@@ -466,7 +469,8 @@ function parseMultipleFilesEntries(
     const entry = parseMultipleFilesEntry(data.subarray(offset));
     if (entry === null) break;
     entries.set(entry.relativePath, entry);
-    offset += 8 + entry.relativePath.length + 1;
+
+    offset += entry.offset + entry.sizeCompressed;
   }
 
   return entries;
@@ -481,11 +485,15 @@ async function parseThorPatch(data: Uint8Array): Promise<ThorContainer> {
 
     const headerData = data.slice(0, HEADER_EXTENDED_MAX_SIZE);
 
-    // if (data.byteLength < HEADER_EXTENDED_MAX_SIZE) {
-    //   return null;
-    // }
-
     const header = parseThorHeader(headerData);
+    const headerSize = calculateHeaderSize(Buffer.from(headerData));
+    header.offset =
+      header.mode === 48
+        ? header.targetGrfName === ''
+          ? headerSize - 1
+          : headerSize
+        : headerSize;
+    console.log(headerSize);
     if (!header) {
       throw new Error('Failed to parse THOR header');
     }
@@ -503,6 +511,7 @@ async function parseThorPatch(data: Uint8Array): Promise<ThorContainer> {
         const entry = parseSingleFileEntry(
           slicedData.subarray(table.fileTableOffset)
         );
+
         if (!entry) {
           throw new Error('Failed to parse THOR file entry');
         }
@@ -515,7 +524,16 @@ async function parseThorPatch(data: Uint8Array): Promise<ThorContainer> {
       }
 
       case ThorMode.MultipleFiles: {
-        const table = parseMultipleFilesTable(slicedData);
+        const table = parseMultipleFilesTable(Buffer.from(slicedData));
+
+        if (data.byteLength < headerSize) {
+          return new ThorContainer(
+            header,
+            table,
+            new Map([['', new ThorFileEntry(0, 0, '', false, 0)]])
+          );
+        }
+
         const compressedTablePosition = table.fileTableOffset - header.offset;
         const compressedTable = slicedData.subarray(
           compressedTablePosition,
@@ -536,4 +554,23 @@ async function parseThorPatch(data: Uint8Array): Promise<ThorContainer> {
   } catch (error) {
     console.error('Error when parse thor patch :', error);
   }
+}
+
+function calculateHeaderSize(data: Uint8Array): number {
+  const magicLength = THOR_HEADER_MAGIC.length;
+  let totalHeaderSize = magicLength; // Start with the magic length
+
+  // Fixed-size fields
+  totalHeaderSize += 1; // 1 byte for useGrfMerging
+  totalHeaderSize += 4; // 4 bytes for fileCount (getUint32)
+  totalHeaderSize += 2; // 2 bytes for mode (getInt16)
+  totalHeaderSize += 1; // 1 byte for targetGrfNameSize
+
+  // Variable-length field: targetGrfName
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const targetGrfNameSize = view.getUint8(magicLength + 7); // 7 = 1 + 4 + 2 (bytes for useGrfMerging, fileCount, mode)
+
+  totalHeaderSize += targetGrfNameSize === 0 ? 1 : targetGrfNameSize;
+
+  return totalHeaderSize;
 }

@@ -4,7 +4,8 @@ import serve from 'electron-serve';
 import { createWindow } from './helpers';
 import fs from 'fs/promises';
 import GrfArchive from '../core/compress/grf/GrfReader';
-import { ThorArchive } from '../core/compress/thor/ThorReader';
+import { ThorArchive, ThorFileEntry } from '../core/compress/thor/ThorReader';
+import { GrfArchiveBuilder } from '../core/compress/grf/GrfBuilder';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -48,15 +49,22 @@ if (isProd) {
     const read = new GrfArchive();
     const data = await read.open(grfPath);
     const FILE =
-      '/Users/sinjiprasetio/Documents/Coding/tamahagane/resources/test/thor/dir2.thor';
+      '/Users/sinjiprasetio/Documents/Coding/tamahagane/resources/test/thor/small.thor';
     const thor = await ThorArchive.open(FILE);
-    // console.log(data);
+    console.log(data);
     // console.log(await read.getEntries());
     // console.log(await read.readFileContent('data\\06guild_r.gat'));
     console.log(thor);
     console.log(thor.getEntries());
-    // console.log(thor.targetGrfName());
     // console.log(await thor.isValid());
+    console.log(thor.targetGrfName());
+    const main = await GrfArchiveBuilder.create('main.grf', 2, 0);
+
+    const entries = [...thor.getEntries()];
+    entries.map((v: ThorFileEntry) => {
+      main.importRawEntryFromThor(thor, v.relativePath);
+    });
+    // await main.finish();
     return 'test';
   });
 })();
