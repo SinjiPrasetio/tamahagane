@@ -341,6 +341,18 @@ function parseMultipleFilesTable(
   const fileTableCompressedSize = view.getInt32(0, true);
   const fileTableOffset = view.getInt32(4, true);
 
+  for (let i = 0; i < 300; i++) {
+    const view = new DataView(buffer.buffer, i);
+
+    // Read the file table compressed size and offset as 32-bit integers (little-endian)
+    const fileTableCompressedSizeC = view.getInt32(0, true);
+    const fileTableOffsetC = view.getInt32(4, true);
+    console.log('Compressed Size', i, ':', fileTableCompressedSizeC);
+    console.log('Offset', i, ':', fileTableOffsetC);
+  }
+
+  console.log(fileTableOffset);
+
   return {
     fileTableCompressedSize,
     fileTableOffset,
@@ -464,11 +476,12 @@ function parseMultipleFilesEntries(
 ): Map<string, ThorFileEntry> {
   const entries = new Map<string, ThorFileEntry>();
   let offset = 0;
-
   while (offset < data.byteLength) {
     const entry = parseMultipleFilesEntry(data.subarray(offset));
     if (entry === null) break;
     entries.set(entry.relativePath, entry);
+
+    console.log(offset);
 
     offset += entry.offset + entry.sizeCompressed;
   }
@@ -525,6 +538,7 @@ async function parseThorPatch(data: Uint8Array): Promise<ThorContainer> {
 
       case ThorMode.MultipleFiles: {
         const table = parseMultipleFilesTable(Buffer.from(slicedData));
+        console.log(table);
 
         if (data.byteLength < headerSize) {
           return new ThorContainer(
@@ -535,16 +549,16 @@ async function parseThorPatch(data: Uint8Array): Promise<ThorContainer> {
         }
 
         const compressedTablePosition = table.fileTableOffset - header.offset;
-        const compressedTable = slicedData.subarray(
-          compressedTablePosition,
-          compressedTablePosition + table.fileTableCompressedSize
-        );
-        console.log(compressedTable);
-        console.log(Buffer.from(compressedTable));
+        console.log(table.fileTableOffset);
+        header;
+        console.log(compressedTablePosition);
+        const compressedTable = slicedData.subarray(compressedTablePosition);
+        console.log(compressedTable.length);
         console.log(data.length);
         console.log(data.length - header.offset);
         console.log(table.fileTableOffset);
         console.log(compressedTable);
+        console.log(compressedTable.length);
         const decompressedTable = zlibDecompress(Buffer.from(compressedTable));
         console.log('reach');
         const entries = parseMultipleFilesEntries(decompressedTable);
